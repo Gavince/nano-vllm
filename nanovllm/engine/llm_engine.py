@@ -60,10 +60,15 @@ class LLMEngine:
         4. 将输出添加到scheduler的运行队列中
         5. 返回输出
         """
+        # 准备数据，区分Prefill和Decode
         seqs, is_prefill = self.scheduler.schedule()
+        # 解码数据，调用模型运行器中的run方法
         token_ids = self.model_runner.call("run", seqs, is_prefill)
+        # 后处理数据，调用scheduler中的postprocess方法
         self.scheduler.postprocess(seqs, token_ids)
+        # 返回输出
         outputs = [(seq.seq_id, seq.completion_token_ids) for seq in seqs if seq.is_finished]
+        # 计算token数
         num_tokens = sum(len(seq) for seq in seqs) if is_prefill else -len(seqs)
         return outputs, num_tokens
 

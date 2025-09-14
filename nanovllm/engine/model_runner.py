@@ -95,6 +95,7 @@ class ModelRunner:
             event.set()
 
     def call(self, method_name, *args):
+        """函数执行入口"""
         if self.world_size > 1 and self.rank == 0:
             self.write_shm(method_name, *args)
         method = getattr(self, method_name, None)
@@ -174,6 +175,7 @@ class ModelRunner:
         layer_id = 0
         for module in self.model.modules():
             if hasattr(module, "k_cache") and hasattr(module, "v_cache"):
+                # 该阶段已经完成kv_cache预先分配
                 module.k_cache = self.kv_cache[0, layer_id]
                 module.v_cache = self.kv_cache[1, layer_id]
                 layer_id += 1
@@ -249,10 +251,17 @@ class ModelRunner:
         # context_lens：限制注意力范围，避免模型 “看到” 还未生成的 token；
         # slot_mapping：指示新生成 token 的 KV 数据应该 “存在缓存的哪个位置”，确保后续生成能复用这些数据。
         for seq in seqs:
-            input_ids.append(seq.last_token)
+            # 此处为list序列的append类型，多个序列在一个列表中进行计算，忽略batch-维度，最终再拼接在一起
+            input_ids.append(seq.last_token)  # 自回归模型，每次解码为上一个token
             positions.append(len(seq))
             context_lens.append(len(seq))
+            """
             # 定位最后序列存储最后一块KV-Cache的位置索引
+            seq.block_table[-1]：序列最后一个缓存块的编号（如 seq1 的块 1）；
+            self.block_size：每个缓存块能存的 token 数（如 16）；
+            seq.last_block_num_tokens：最后一个块中已使用的 token 数（如 seq1 用了 5 个）；
+            最终结果 = 最后一个块的起始位置 + 最后一个 token 在块内的索引。
+            """
             slot_mapping.append(seq.block_table[-1] * self.block_size + seq.last_block_num_tokens  - 1)
         input_ids = torch.tensor(input_ids, dtype=torch.int64, pin_memory=True).cuda(non_blocking=True)
         positions = torch.tensor(positions, dtype=torch.int64, pin_memory=True).cuda(non_blocking=True)
@@ -269,24 +278,36 @@ class ModelRunner:
         temperatures = torch.tensor(temperatures, dtype=torch.float32, pin_memory=True).cuda(non_blocking=True)
         return temperatures
 
-    @torch.inference_mode()
+    @torch.inference_mode()  # 禁用梯度计算，加速推理并节省内存
     def run_model(self, input_ids: torch.Tensor, positions: torch.Tensor, is_prefill: bool):
+        # 条件判断：选择计算路径
         if is_prefill or self.enforce_eager or input_ids.size(0) > 512:
+            # 路径1：直接执行模型计算（预填充/强制即时执行/大批量）
             return self.model.compute_logits(self.model(input_ids, positions))
         else:
-            bs = input_ids.size(0)
-            context = get_context()
+            # 路径2：使用预录制的CUDA图加速（小批量解码阶段）
+            bs = input_ids.size(0)  # 批量大小
+            context = get_context()  # 获取当前推理上下文（含block_tables等信息）
+            # 选择适合当前批量大小的CUDA图（提前录制了不同批量的图）
             graph = self.graphs[next(x for x in self.graph_bs if x >= bs)]
-            graph_vars = self.graph_vars
+            graph_vars = self.graph_vars  # 图中使用的变量（输入/输出张量）
+            
+            # 重置图变量（除了输出）
             for k, v in graph_vars.items():
                 if k != "outputs":
                     v.zero_()
+            
+            # 填充输入数据到图变量（只填充当前批量大小的数据）
             graph_vars["input_ids"][:bs] = input_ids
             graph_vars["positions"][:bs] = positions
             graph_vars["slot_mapping"][:bs] = context.slot_mapping
             graph_vars["context_lens"][:bs] = context.context_lens
             graph_vars["block_tables"][:bs, :context.block_tables.size(1)] = context.block_tables
+            
+            # 重放CUDA图（执行预录制的操作序列）
             graph.replay()
+            
+            # 从图变量中提取输出并计算logits
             return self.model.compute_logits(graph_vars["outputs"][:bs])
 
     def run(self, seqs: list[Sequence], is_prefill: bool) -> list[int]:

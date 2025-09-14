@@ -71,6 +71,16 @@ class Sequence:
 
     @property
     def last_block_num_tokens(self):
+        """
+        公式：self.num_tokens - (self.num_blocks - 1) * self.block_size
+        self.num_tokens：序列的总 token 数量（已生成的所有 token 数）；
+        self.num_blocks：该序列的 KV 缓存占用的总块数；
+        self.block_size：每个缓存块能容纳的最大 token 数（固定值，如 16、32）。
+        
+        在更新 KV 缓存时，需要知道最后一个块的实际使用量，才能：
+            1、正确写入新生成的 token（放在最后一个块的下一个空闲位置）；
+            2、判断是否需要分配新的缓存块（当最后一个块满了时）。
+        """
         return self.num_tokens - (self.num_blocks - 1) * self.block_size
 
     def block(self, i):

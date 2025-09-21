@@ -21,6 +21,7 @@ class LLMEngine:
         Sequence.block_size = config.kvcache_block_size
         self.ps = []
         self.events = []
+        
         ctx = mp.get_context("spawn")
         for i in range(1, config.tensor_parallel_size):
             event = ctx.Event()

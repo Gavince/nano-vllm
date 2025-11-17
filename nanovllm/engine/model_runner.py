@@ -220,10 +220,9 @@ class ModelRunner:
             cu_seqlens_k.append(cu_seqlens_k[-1] + seqlen_k)
             max_seqlen_q = max(seqlen_q, max_seqlen_q)
             max_seqlen_k = max(seqlen_k, max_seqlen_k)
-            # 不存在block_table, 不处理，首次填充，没有KV-Cache缓存进行存储
+            # * 不存在block_table, 不处理，首次填充，没有KV-Cache缓存进行存储
             if not seq.block_table:
                 continue
-            
             for i in range(seq.num_cached_blocks, seq.num_blocks):
                 start = seq.block_table[i] * self.block_size
                 if i != seq.num_blocks - 1:
@@ -319,8 +318,9 @@ class ModelRunner:
         5. 返回token_ids
         """
         # 运行阶段可以分为两个阶段：prefill和decode
-        # prefill阶段：处理新的prompt序列
-        # decode阶段：逐个生成token
+        # prefill阶段：处理新的prompt序列，属于内存密集性
+        # decode阶段：逐个生成token，属于计算密集性
+        # * 需要根据阶段选择不同的准备方法
         input_ids, positions = self.prepare_prefill(seqs) if is_prefill else self.prepare_decode(seqs)
         temperatures = self.prepare_sample(seqs) if self.rank == 0 else None
         logits = self.run_model(input_ids, positions, is_prefill)

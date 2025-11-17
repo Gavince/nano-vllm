@@ -35,12 +35,14 @@ class Scheduler:
         num_batched_tokens = 0
         # 1. 从scheduler的等待队列中获取等待的序列
         # 优先等待队列中数据
+        # * 外部循环终止条件(最大序列数)
         while self.waiting and num_seqs < self.max_num_seqs:
             # 获取等待队列中的第一个序列
             seq = self.waiting[0]
             # 2. 将序列添加到模型运行器中 
             # 检查是否有足够的KV缓存内存块来存储序列，如果不够，则跳出循环
             # 检查添加新序列后是否会超过最大批处理token数
+            # * 内部循环终止条件(最大batch token数 和 是否能分配缓存块)
             if num_batched_tokens + len(seq) > self.max_num_batched_tokens or not self.block_manager.can_allocate(seq):
                 break
             # 3. 从模型运行器中获取输出
@@ -55,11 +57,11 @@ class Scheduler:
             self.running.append(seq)
             scheduled_seqs.append(seq)
             
-        # 如果等待队列中没有序列，则返回False
+        # * prefill阶段的请求都属于等待序列，优选处理prefill阶段的请求
         if scheduled_seqs:
             return scheduled_seqs, True
 
-        # decode
+        # 处理decoder阶段的请求
         while self.running and num_seqs < self.max_num_seqs:
             seq = self.running.popleft()
             while not self.block_manager.can_append(seq):

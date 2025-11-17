@@ -67,6 +67,11 @@ class Sequence:
 
     @property
     def num_blocks(self):
+        """""
+        公式：(self.num_tokens + self.block_size - 1) // self.block_size
+        self.num_tokens：序列的总 token 数量（已生成的所有 token 数）；
+        self.block_size：每个缓存块能容纳的最大 token 数（固定值，如 16、32）。
+        """
         return (self.num_tokens + self.block_size - 1) // self.block_size
 
     @property

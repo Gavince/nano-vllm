@@ -96,7 +96,7 @@ class LLMEngine:
             self.add_request(prompt, sp)
         outputs = {}
         prefill_throughput = decode_throughput = 0.
-        # self.is_finished(): 检查 waiting 和 running 队列是否都为空
+        # self.is_finished(): 检查 waiting 和 running 队列是否都为空 为空则停止循环
         while not self.is_finished():
             t = perf_counter()
             # 执行step,

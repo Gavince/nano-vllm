@@ -215,6 +215,7 @@ class Qwen3ForCausalLM(nn.Module):
         positions: torch.Tensor,
     ) -> torch.Tensor:
         hidden_states = self.model(input_ids, positions)
+        # 输出维度：(N, vocab_size)
         return hidden_states
 
     def compute_logits(

@@ -132,10 +132,45 @@ class ModelRunner:
         peak = torch.cuda.memory_stats()["allocated_bytes.all.peak"]
         current = torch.cuda.memory_stats()["allocated_bytes.all.current"]
         num_kv_heads = hf_config.num_key_value_heads // self.world_size
+        """   
+        参数计算解析  
+        # K和V各占一份
+        block_bytes = 2 
+            * 32  # 32层注意力
+            * 16  # 每个块存16个token
+            * 32  # 32个KV头
+            * 64  # 每个头64维
+            * 2  # float16占2字节
+        = 2×32×16×32×64×2 = 4,194,304 字节 = 4MB（每个块大小）
+        """
         block_bytes = 2 * hf_config.num_hidden_layers * self.block_size * num_kv_heads * hf_config.head_dim * hf_config.torch_dtype.itemsize
+        """
+        参数计算解析
+        可用内存 = 总内存×利用率 - 已用内存 - 峰值冗余（peak - current）
+        available = 16GB×0.9 - 6GB - (7GB - 6GB) 
+        = 14.4GB - 6GB - 1GB = 7.4GB = 7.4×1024³字节 ≈ 7.948×10⁹字节
+
+        # 块数 = 可用内存 // 每个块大小
+        config.num_kvcache_blocks = 7.948×10⁹ // 4.194×10⁶ ≈ 1895 个块
+        """
         config.num_kvcache_blocks = int(total * config.gpu_memory_utilization - used - peak + current) // block_bytes
                 
         assert config.num_kvcache_blocks > 0
+        """
+        计算结果：
+        7.948×10⁹ // 4.194×10⁶ ≈ 1895 个块
+        每个块大小 = 4.194×10⁶ 字节 = 4MB
+        2 * num_hidden_layers * (1895块 * 4MB)
+        
+        生成的张量形状为 (2, 32, 1895, 16, 32, 64)，是一块连续的 GPU 内存（约 7.58GB），包含了所有层、所有 KV 头的缓存空间。
+        可以理解为一个 “多层货架”：
+                第 0 层（维度 0）放 Key，第 1 层放 Value；
+                每个货架有 32 个 “层隔间”（维度 1），对应 32 层注意力；
+                每个隔间里有 1895 个 “存储盒”（维度 2，缓存块）；
+                每个盒子里有 16 个 “槽位”（维度 3，token 位置）；
+                每个槽位有 32 个 “小格子”（维度 4，KV 头）；
+                每个小格子里有 64 个 “数据格”（维度 5，特征维度）。
+        """
         self.kv_cache = torch.empty(2, hf_config.num_hidden_layers, config.num_kvcache_blocks, self.block_size, num_kv_heads, hf_config.head_dim)
         layer_id = 0
         for module in self.model.modules():

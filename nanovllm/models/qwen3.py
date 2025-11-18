@@ -174,6 +174,19 @@ class Qwen3Model(nn.Module):
         input_ids: torch.Tensor,
         positions: torch.Tensor,
     ) -> torch.Tensor:
+        # 一维，形如 (N,)，N 为本次处理的 token 总数（prefill 时为新增 token 总数；decode 时为 batch size）。
+        """
+        input_ids维度详细解释
+        预填充阶段（prefill）：形状为 (sum_i(seqlen_i - cached_i),)，长度等于本次所有序列“新增 token”的总数；positions 同步一维同长度。
+        解码阶段（decode）：形状为 (num_seqs,)，长度等于并行解码的序列条数（batch size）；positions 同步一维同长度。
+        
+        一个小例（形状示例）
+        假设 hidden_size=4096，一次 decode 批量 N=8：
+            input_ids: (8,)
+            嵌入后：hidden_states: (8, 4096)
+            过 32 层解码器后仍为 (8, 4096)
+            RMSNorm 后输出 (8, 4096)，供后续 lm_head 变成 logits 使用。
+        """
         hidden_states = self.embed_tokens(input_ids)
         residual = None
         for layer in self.layers:
@@ -206,7 +219,9 @@ class Qwen3ForCausalLM(nn.Module):
         input_ids: torch.Tensor,
         positions: torch.Tensor,
     ) -> torch.Tensor:
-        return self.model(input_ids, positions)
+        hidden_states = self.model(input_ids, positions)
+        # 输出维度：(N, vocab_size)
+        return hidden_states
 
     def compute_logits(
         self,

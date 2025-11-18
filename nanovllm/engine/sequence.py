@@ -16,16 +16,27 @@ class Sequence:
     counter = count()
 
     def __init__(self, token_ids: list[int], sampling_params = SamplingParams()):
+        # 计数器，用于生成序列ID
         self.seq_id = next(Sequence.counter)
+        # 序列状态
         self.status = SequenceStatus.WAITING
+        # 序列token_ids
         self.token_ids = copy(token_ids)
+        # 最后一个token
         self.last_token = token_ids[-1]
+        # 序列token数量
         self.num_tokens = len(self.token_ids)
+        # 序列prompt token数量
         self.num_prompt_tokens = len(token_ids)
+        # 序列cached token数量
         self.num_cached_tokens = 0
+        # 序列block table
         self.block_table = []
+        # 采样参数
         self.temperature = sampling_params.temperature
+        # 最大token数量
         self.max_tokens = sampling_params.max_tokens
+        # 是否忽略EOS
         self.ignore_eos = sampling_params.ignore_eos
 
     def __len__(self):
@@ -56,10 +67,25 @@ class Sequence:
 
     @property
     def num_blocks(self):
+        """""
+        公式：(self.num_tokens + self.block_size - 1) // self.block_size
+        self.num_tokens：序列的总 token 数量（已生成的所有 token 数）；
+        self.block_size：每个缓存块能容纳的最大 token 数（固定值，如 16、32）。
+        """
         return (self.num_tokens + self.block_size - 1) // self.block_size
 
     @property
     def last_block_num_tokens(self):
+        """
+        公式：self.num_tokens - (self.num_blocks - 1) * self.block_size
+        self.num_tokens：序列的总 token 数量（已生成的所有 token 数）；
+        self.num_blocks：该序列的 KV 缓存占用的总块数；
+        self.block_size：每个缓存块能容纳的最大 token 数（固定值，如 16、32）。
+        
+        在更新 KV 缓存时，需要知道最后一个块的实际使用量，才能：
+            1、正确写入新生成的 token（放在最后一个块的下一个空闲位置）；
+            2、判断是否需要分配新的缓存块（当最后一个块满了时）。
+        """
         return self.num_tokens - (self.num_blocks - 1) * self.block_size
 
     def block(self, i):

@@ -120,7 +120,6 @@ run_git() {
 is_git_busy() {
     [[ -d .git/rebase-merge ]] \
     || [[ -d .git/rebase-apply ]] \
-    || git rev-parse --verify REBASE_HEAD >/dev/null 2>&1 \
     || git rev-parse --verify MERGE_HEAD >/dev/null 2>&1
 }
 

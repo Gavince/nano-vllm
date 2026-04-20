@@ -23,7 +23,7 @@ class Qwen3Attention(nn.Module):
         rms_norm_eps: float = 1e-06,
         qkv_bias: bool = False,
         rope_theta: float = 10000,
-        rope_scaling: dict | None = None,
+        rope_scaling: tuple | None = None,
     ) -> None:
         super().__init__()
         tp_size = dist.get_world_size()
@@ -36,8 +36,7 @@ class Qwen3Attention(nn.Module):
         self.head_dim = head_dim or hidden_size // self.total_num_heads
         self.q_size = self.num_heads * self.head_dim
         self.kv_size = self.num_kv_heads * self.head_dim
-        self.scaling = self.head_dim ** -0.5
-        self.qkv_bias = qkv_bias
+        self.scaling = self.head_dim**-0.5
 
         self.qkv_proj = QKVParallelLinear(
             hidden_size,
@@ -51,13 +50,12 @@ class Qwen3Attention(nn.Module):
             hidden_size,
             bias=False,
         )
-        if isinstance(rope_scaling, dict):
-            rope_theta = rope_scaling.get("rope_theta", rope_theta)
         self.rotary_emb = get_rope(
             self.head_dim,
             rotary_dim=self.head_dim,
             max_position=max_position,
             base=rope_theta,
+            rope_scaling=rope_scaling,
         )
         self.attn = Attention(
             self.num_heads,
@@ -65,9 +63,8 @@ class Qwen3Attention(nn.Module):
             self.scaling,
             self.num_kv_heads,
         )
-        if not self.qkv_bias:
-            self.q_norm = RMSNorm(self.head_dim, eps=rms_norm_eps)
-            self.k_norm = RMSNorm(self.head_dim, eps=rms_norm_eps)
+        self.q_norm = RMSNorm(self.head_dim, eps=rms_norm_eps)
+        self.k_norm = RMSNorm(self.head_dim, eps=rms_norm_eps)
 
     def forward(
         self,
@@ -76,15 +73,15 @@ class Qwen3Attention(nn.Module):
     ) -> torch.Tensor:
         qkv = self.qkv_proj(hidden_states)
         q, k, v = qkv.split([self.q_size, self.kv_size, self.kv_size], dim=-1)
-        q = q.view(-1, self.num_heads, self.head_dim)
-        k = k.view(-1, self.num_kv_heads, self.head_dim)
-        v = v.view(-1, self.num_kv_heads, self.head_dim)
-        if not self.qkv_bias:
-            q = self.q_norm(q)
-            k = self.k_norm(k)
+        q_by_head = q.view(-1, self.num_heads, self.head_dim)
+        q_by_head = self.q_norm(q_by_head)
+        q = q_by_head.view(q.shape)
+        k_by_head = k.view(-1, self.num_kv_heads, self.head_dim)
+        k_by_head = self.k_norm(k_by_head)
+        k = k_by_head.view(k.shape)
         q, k = self.rotary_emb(positions, q, k)
         o = self.attn(q, k, v)
-        output = self.o_proj(o.flatten(1, -1))
+        output = self.o_proj(o)
         return output
 
 
@@ -130,7 +127,7 @@ class Qwen3DecoderLayer(nn.Module):
             num_kv_heads=config.num_key_value_heads,
             max_position=config.max_position_embeddings,
             rms_norm_eps=config.rms_norm_eps,
-            qkv_bias=getattr(config, 'attention_bias', True),
+            qkv_bias=getattr(config, 'attention_bias', False),
             head_dim=getattr(config, 'head_dim', None),
             rope_theta=getattr(config, "rope_theta", 1000000),
             rope_scaling=getattr(config, "rope_scaling", None),
@@ -150,7 +147,8 @@ class Qwen3DecoderLayer(nn.Module):
         residual: torch.Tensor | None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         if residual is None:
-            hidden_states, residual = self.input_layernorm(hidden_states), hidden_states
+            residual = hidden_states
+            hidden_states = self.input_layernorm(hidden_states)
         else:
             hidden_states, residual = self.input_layernorm(hidden_states, residual)
         hidden_states = self.self_attn(positions, hidden_states)
@@ -175,6 +173,19 @@ class Qwen3Model(nn.Module):
         input_ids: torch.Tensor,
         positions: torch.Tensor,
     ) -> torch.Tensor:
+        # 一维，形如 (N,)，N 为本次处理的 token 总数（prefill 时为新增 token 总数；decode 时为 batch size）。
+        """
+        input_ids维度详细解释
+        预填充阶段（prefill）：形状为 (sum_i(seqlen_i - cached_i),)，长度等于本次所有序列“新增 token”的总数；positions 同步一维同长度。
+        解码阶段（decode）：形状为 (num_seqs,)，长度等于并行解码的序列条数（batch size）；positions 同步一维同长度。
+        
+        一个小例（形状示例）
+        假设 hidden_size=4096，一次 decode 批量 N=8：
+            input_ids: (8,)
+            嵌入后：hidden_states: (8, 4096)
+            过 32 层解码器后仍为 (8, 4096)
+            RMSNorm 后输出 (8, 4096)，供后续 lm_head 变成 logits 使用。
+        """
         hidden_states = self.embed_tokens(input_ids)
         residual = None
         for layer in self.layers:
@@ -207,10 +218,13 @@ class Qwen3ForCausalLM(nn.Module):
         input_ids: torch.Tensor,
         positions: torch.Tensor,
     ) -> torch.Tensor:
-        return self.model(input_ids, positions)
+        hidden_states = self.model(input_ids, positions)
+        # [B, T, H]
+        return hidden_states
 
     def compute_logits(
         self,
         hidden_states: torch.Tensor,
     ) -> torch.Tensor:
-        return self.lm_head(hidden_states)
+        logits = self.lm_head(hidden_states)
+        return logits

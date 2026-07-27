@@ -21,6 +21,7 @@ class LLMEngine:
         Sequence.block_size = config.kvcache_block_size
         self.ps = []
         self.events = []
+        
         ctx = mp.get_context("spawn")
         for i in range(1, config.tensor_parallel_size):
             event = ctx.Event()
@@ -41,12 +42,27 @@ class LLMEngine:
             p.join()
 
     def add_request(self, prompt: str | list[int], sampling_params: SamplingParams):
+        """
+        1. 将prompt转换为token_ids
+        2. 为每一个请求单独设置一个Sequence对象，用于存储请求的token_ids和sampling_params
+        3. 添加到scheduler的等待队列中
+        """
         if isinstance(prompt, str):
             prompt = self.tokenizer.encode(prompt)
+        # 为每一个请求单独设置一个Sequence对象，用于存储请求的token_ids和sampling_params
         seq = Sequence(prompt, sampling_params)
+        # 添加到scheduler的等待队列中
         self.scheduler.add(seq)
 
     def step(self):
+        """
+        1. 从scheduler的等待队列中获取等待的序列
+        2. 将序列添加到模型运行器中
+        3. 从模型运行器中获取输出
+        4. 将输出添加到scheduler的运行队列中
+        5. 返回输出
+        """
+        # 准备数据，区分Prefill和Decode
         seqs, is_prefill = self.scheduler.schedule()
         num_tokens = sum(seq.num_scheduled_tokens for seq in seqs) if is_prefill else -len(seqs)
         token_ids = self.model_runner.call("run", seqs, is_prefill)
@@ -66,12 +82,15 @@ class LLMEngine:
         pbar = tqdm(total=len(prompts), desc="Generating", dynamic_ncols=True, disable=not use_tqdm)
         if not isinstance(sampling_params, list):
             sampling_params = [sampling_params] * len(prompts)
+        # 添加请求
         for prompt, sp in zip(prompts, sampling_params):
             self.add_request(prompt, sp)
         outputs = {}
         prefill_throughput = decode_throughput = 0.
+        # self.is_finished(): 检查 waiting 和 running 队列是否都为空 为空则停止循环
         while not self.is_finished():
             t = perf_counter()
+            # 执行step,
             output, num_tokens = self.step()
             if num_tokens > 0:
                 prefill_throughput = num_tokens / (perf_counter() - t)

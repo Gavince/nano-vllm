@@ -28,8 +28,11 @@ class BlockManager:
     def __init__(self, num_blocks: int, block_size: int):
         self.block_size = block_size
         self.blocks: list[Block] = [Block(i) for i in range(num_blocks)]
+        # 存放缓存块的hash值到block_id的映射    
         self.hash_to_block_id: dict[int, int] = dict()
+        # 存放空闲的缓存块id
         self.free_block_ids: deque[int] = deque(range(num_blocks))
+        # 存放已使用的缓存块id
         self.used_block_ids: set[int] = set()
 
     @classmethod

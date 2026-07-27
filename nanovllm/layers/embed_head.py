@@ -54,6 +54,18 @@ class ParallelLMHead(VocabParallelEmbedding):
         super().__init__(num_embeddings, embedding_dim)
 
     def forward(self, x: torch.Tensor):
+        """"
+        1、通过 context.is_prefill 判断当前是否处于预填充阶段。
+        
+        2、context.cu_seqlens_q 是一个 “累积序列长度” 数组，用于批量处理不同长度的输入序列。例如，若批量中有两个序列，
+        长度分别为 5 和 3，则 cu_seqlens_q = [0, 5, 8]（0 是起点，5 是第一个序列终点，8 是第二个序列终点）。
+        
+        3、last_indices = context.cu_seqlens_q[1:] - 1 计算每个序列最后一个 token 的索引：对于上述例子，
+        cu_seqlens_q[1:] 是 [5, 8]，减 1 后得到 [4, 7]，即两个序列最后一个 token 的位置。
+        
+        4、x = x[last_indices].contiguous() 从模型输出的隐状态 x 中，提取每个序列最后一个 token 的隐状态（因为后续
+        解码只需要这个位置的结果），并确保内存连续（contiguous() 是为了避免 PyTorch 的内存碎片化问题）。
+        """
         context = get_context()
         if context.is_prefill:
             last_indices = context.cu_seqlens_q[1:] - 1

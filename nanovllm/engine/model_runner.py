@@ -203,7 +203,6 @@ class ModelRunner:
             max_seqlen_q = max(seqlen_q, max_seqlen_q)
             max_seqlen_k = max(seqlen_k, max_seqlen_k)
             if not seq.block_table:    # warmup
-            if not seq.block_table:    # warmup
                 continue
             start_block = start // self.block_size
             end_block = (end + self.block_size - 1) // self.block_size
